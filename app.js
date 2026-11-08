@@ -12,9 +12,44 @@ function validShape(s){return !!(s&&typeof s==='object'&&s.safe&&s.safe.saban&&s
 try{const raw=localStorage.getItem(KEY);if(raw){const loaded=JSON.parse(raw);if(validShape(loaded))state=loaded;else alert('Kayıt biçimi uygun değil. Bir yedekten geri yükleyebilirsin.');}}catch(e){alert('Yerel veriler okunamadı. Yedek dosyanı kontrol et.');}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(state));render();return true}catch(e){alert('Kayıt yapılamadı! Depolama alanını ve gizli gezinme modunu kontrol et.');return false}}
 function record(title,meta,amount,red=false){const item=txt('div','','record');const left=txt('div','');left.append(txt('strong',title),txt('div',meta,'muted'));item.append(left,txt('div',amount,'amount'));item.lastChild.style.color=red?'var(--red)':'var(--green)';return item}
+function editCashLog(id){
+ const d=state.safe[state.drawer],l=d.logs.find(x=>x.id===id);
+ if(!l||!['USD','EUR','TRY','G24'].includes(l.asset))return;
+ $('editCashTitle').textContent='Kasa kaydını düzenle · '+l.asset;
+ $('editCashAmount').value=l.amount;
+ $('editCashNote').value=l.note||'';
+ $('editCashDialog').dataset.id=id;
+ $('editCashDialog').showModal();
+}
+function adjustCashLog(id,newAmount,remove=false){
+ const d=state.safe[state.drawer],idx=d.logs.findIndex(x=>x.id===id);
+ if(idx<0)return false;
+ const l=d.logs[idx],asset=l.asset.toLowerCase();
+ if(!['usd','eur','try','g24'].includes(asset))return false;
+ const oldSigned=(l.type==='out'?-1:1)*Number(l.amount);
+ const newSigned=remove?0:(l.type==='out'?-1:1)*newAmount;
+ const delta=newSigned-oldSigned;
+ if(Number(d[asset])+delta < -0.0000001){alert('Bu değişiklik kasa bakiyesini eksiye düşürüyor.');return false;}
+ d[asset]=Math.max(0,Number(d[asset])+delta);
+ // Logs newest first: later transactions appear before the edited transaction.
+ d.logs.slice(0,idx).forEach(x=>{if(x.asset===l.asset&&Number.isFinite(Number(x.after)))x.after=Number(x.after)+delta});
+ if(remove)d.logs.splice(idx,1);
+ else{l.amount=newAmount;l.note=$('editCashNote').value.trim()||'Açıklama yok';l.after=Number(l.after)+delta;}
+ save();return true;
+}
+$('editCashForm').addEventListener('submit',e=>{e.preventDefault();const amount=Number($('editCashAmount').value);if(!positive(amount))return alert('Pozitif tutar gir.');if(adjustCashLog($('editCashDialog').dataset.id,amount))$('editCashDialog').close()});
+$('deleteCashLog').onclick=()=>{if(!confirm('Bu kasa hareketini kalıcı olarak silmek istiyor musun? Bakiye buna göre düzeltilecek.'))return;if(adjustCashLog($('editCashDialog').dataset.id,0,true))$('editCashDialog').close()};
+function editGoldItem(id){const item=state.safe[state.drawer].g22.find(x=>x.id===id);if(!item)return;
+ $('editGoldDialog').dataset.id=id;$('editGoldTitle').value=item.title;$('editGoldQty').value=item.qty;$('editGoldGrams').value=item.grams;$('editGoldDialog').showModal();}
+$('editGoldForm').addEventListener('submit',e=>{e.preventDefault();const d=state.safe[state.drawer],item=d.g22.find(x=>x.id===$('editGoldDialog').dataset.id);if(!item)return;
+ const grams=Number($('editGoldGrams').value),title=$('editGoldTitle').value.trim(),qty=$('editGoldQty').value.trim()||'1 Adet';if(!positive(grams)||!title)return alert('Altın adı ve pozitif gram bilgisi gerekli.');
+ const diff=grams-Number(item.grams);item.title=title;item.qty=qty;item.grams=grams;
+ // Keep existing audit entries; append a correction only if weight changed.
+ if(diff!==0)d.logs.unshift({id:crypto.randomUUID(),date:now(),asset:'22 AYAR',type:diff>0?'in':'out',amount:Math.abs(diff),unit:'gr',after:d.g22.reduce((a,x)=>a+Number(x.grams||0),0),note:title+' gram düzeltmesi'});
+ $('editGoldDialog').close();save();});
 function render(){document.querySelectorAll('[data-drawer]').forEach(b=>b.classList.toggle('active',b.dataset.drawer===state.drawer));const d=state.safe[state.drawer];$('assetCards').replaceChildren();['usd','eur','try','g24'].forEach(asset=>{const card=txt('div','','card');card.append(txt('div',names[asset],'label'));const val=txt('div',fmt(d[asset])+' '+units[asset],'value');val.style.color=asset==='usd'?'var(--green)':asset==='eur'?'var(--blue)':asset==='g24'?'var(--gold)':'var(--text)';card.append(val);const actions=txt('div','','actions');[['out',asset==='g24'?'− Gram Al':'− Kasadan Al'],['in','+ Ekle']].forEach(([type,label])=>{const b=txt('button',label,'btn '+(type==='out'?'out':'in'));b.addEventListener('click',()=>openTx(asset,type));actions.append(b)});card.append(actions);$('assetCards').append(card)});
-$('g22Total').textContent='Toplam: '+fmt(d.g22.reduce((a,x)=>a+Number(x.grams||0),0))+' gr';$('goldList').replaceChildren();d.g22.forEach(item=>{const outer=txt('div','','item row');const left=txt('div','');left.append(txt('strong',String(item.title)));left.append(txt('div',String(item.qty||'')+' · '+fmt(item.grams)+' gr','muted'));const b=txt('button','Çıkar','btn out small');b.onclick=()=>{if(!confirm('Bu altın kalemini kasadan çıkarmak istiyor musun?'))return;const grams=d.g22.reduce((a,x)=>a+Number(x.grams||0),0);d.g22=d.g22.filter(x=>x.id!==item.id);d.logs.unshift({id:crypto.randomUUID(),date:now(),asset:'22 AYAR',type:'out',amount:Number(item.grams),unit:'gr',after:grams-Number(item.grams),note:item.title+' çıkarıldı'});save()};outer.append(left,b);$('goldList').append(outer)});if(!d.g22.length)$('goldList').append(txt('div','Henüz kayıtlı 22 ayar altın yok.','empty'));
-$('safeLogs').replaceChildren();d.logs.forEach(l=>$('safeLogs').append(record(String(l.note||l.asset||'Kasa işlemi'),String(l.date||'')+' · Kalan: '+fmt(l.after)+' '+String(l.unit||''),(l.type==='out'?'−':'+')+fmt(l.amount)+' '+String(l.unit||''),l.type==='out')));if(!d.logs.length)$('safeLogs').append(txt('div','Henüz işlem yapılmadı.','empty'));
+$('g22Total').textContent='Toplam: '+fmt(d.g22.reduce((a,x)=>a+Number(x.grams||0),0))+' gr';$('goldList').replaceChildren();d.g22.forEach(item=>{const outer=txt('div','','item row');const left=txt('div','');left.append(txt('strong',String(item.title)));left.append(txt('div',String(item.qty||'')+' · '+fmt(item.grams)+' gr','muted'));const b=txt('button','Çıkar','btn out small');b.onclick=()=>{if(!confirm('Bu altın kalemini kasadan çıkarmak istiyor musun?'))return;const grams=d.g22.reduce((a,x)=>a+Number(x.grams||0),0);d.g22=d.g22.filter(x=>x.id!==item.id);d.logs.unshift({id:crypto.randomUUID(),date:now(),asset:'22 AYAR',type:'out',amount:Number(item.grams),unit:'gr',after:grams-Number(item.grams),note:item.title+' çıkarıldı'});save()};const edit=txt('button','Düzenle','btn small');edit.onclick=()=>editGoldItem(item.id);const buttons=txt('div','','row');buttons.append(edit,b);outer.append(left,buttons);$('goldList').append(outer)});if(!d.g22.length)$('goldList').append(txt('div','Henüz kayıtlı 22 ayar altın yok.','empty'));
+$('safeLogs').replaceChildren();d.logs.forEach(l=>{const el=record(String(l.note||l.asset||'Kasa işlemi'),String(l.date||'')+' · Kalan: '+fmt(l.after)+' '+String(l.unit||''),(l.type==='out'?'−':'+')+fmt(l.amount)+' '+String(l.unit||''),l.type==='out');if(['USD','EUR','TRY','G24'].includes(l.asset)){const btn=txt('button','Düzenle / Sil','btn small');btn.style.marginLeft='8px';btn.onclick=()=>editCashLog(l.id);el.append(btn)}$('safeLogs').append(el)});if(!d.logs.length)$('safeLogs').append(txt('div','Henüz işlem yapılmadı.','empty'));
 $('miranCards').replaceChildren();['usd','eur','try'].forEach(c=>{const el=txt('div','','card');el.append(txt('div',names[c],'label'),txt('div',fmt(state.miran[c])+' '+units[c],'value'));$('miranCards').append(el)});$('miranLogs').replaceChildren();state.miran.logs.forEach(l=>$('miranLogs').append(record(String(l.customer||'Belirtilmedi')+' · '+String(l.place||''),String(l.date||'')+' · Kalan: '+fmt(l.after)+' '+String(l.unit||''),(l.mode==='teslim'?'−':'+')+fmt(l.amount)+' '+String(l.unit||''),l.mode==='teslim')));if(!state.miran.logs.length)$('miranLogs').append(txt('div','Henüz işlem yapılmadı.','empty'));
 $('debtList').replaceChildren();state.debts.forEach(item=>{const el=txt('div','','item row'),left=txt('div','');left.append(txt('strong',String(item.person)+': '+fmt(item.amount)+' '+String(item.unit)),txt('div',String(item.date||'')+' · '+String(item.note||''),'muted'));const b=txt('button','Tahsil Edildi','btn in small');b.onclick=()=>{if(!confirm('Bu borcu tamamen tahsil ettiğini ve kaydı listeden kaldırmayı onaylıyor musun?'))return;state.debts=state.debts.filter(x=>x.id!==item.id);save()};el.append(left,b);$('debtList').append(el)});if(!state.debts.length)$('debtList').append(txt('div','Açık borç yok.','empty'))}
 function openTx(asset,type){active={asset,type};$('txTitle').textContent=(type==='out'?'Kasadan çıkış: ':'Kasaya ekle: ')+names[asset];$('txForm').reset();preview();$('transaction').showModal()}
